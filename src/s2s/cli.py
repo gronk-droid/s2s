@@ -212,10 +212,11 @@ class S2SApp:
         self.old_settings = None
 
         # Mode system for vim-like editing
-        self.mode = "input"  # 'input', 'browse', 'edit'
+        self.mode = "input"  # 'input', 'browse', 'edit', 'edit_sentence'
         self.selected_animation_index = (
             -1
         )  # -1 means input box, 0+ means animation index
+        self.current_sentence_edit = ""  # Buffer for editing sentences
 
         # View mode system
         self.view_mode = "line-by-line"  # 'line-by-line', 'review'
@@ -313,6 +314,16 @@ class S2SApp:
             if next_char == "[":
                 # Read the rest of the sequence
                 third = sys.stdin.read(1)
+                # Check for modified keys (like Shift+Enter: ESC[13;2~)
+                if third.isdigit():
+                    # Read until we get the final character
+                    sequence = third
+                    while True:
+                        next_c = sys.stdin.read(1)
+                        sequence += next_c
+                        if next_c.isalpha() or next_c == "~":
+                            break
+                    return f"\x1b[{sequence}"
                 return f"\x1b[{third}"
             return char
 
@@ -320,7 +331,11 @@ class S2SApp:
 
     def get_input_line(self) -> Tuple[str, str]:
         """Get input line with editing support, returns (text, action)"""
-        buffer = list(self.current_animation)
+        # Determine which buffer to use based on mode
+        if self.mode == "edit_sentence":
+            buffer = list(self.current_sentence_edit)
+        else:
+            buffer = list(self.current_animation)
         cursor_pos = len(buffer)
 
         while True:
@@ -331,8 +346,73 @@ class S2SApp:
 
             # Display buffer in appropriate location based on view mode
             if self.view_mode == "review":
-                # In review mode, only render inline input when focused on animations
-                if self.review_focus == "animations":
+                # In review mode, render inline input based on focus
+                if self.review_focus == "script" and self.mode == "edit_sentence":
+                    # Editing sentence on the left side
+                    mid_col = cols // 2
+                    left_col_width = mid_col - 4
+                    max_text_width = left_col_width - 4  # Account for "► " prefix
+
+                    # Calculate which row the current sentence is on
+                    content_start_row = 5
+                    sentence_row = content_start_row
+                    last_section = None
+                    for i in range(self.review_scroll_offset, self.current_index + 1):
+                        if i == self.current_index:
+                            break
+                        item = self.items[i]
+
+                        # Account for section headers
+                        if item["section"] != last_section:
+                            if last_section is not None:
+                                sentence_row += 1  # spacing before section
+                            sentence_row += 1  # section header
+                            last_section = item["section"]
+
+                        wrapped = self.wrap_text(item["sentence"], left_col_width)
+                        sentence_row += (
+                            max(
+                                len(wrapped),
+                                len(item["animations"]) if item["animations"] else 1,
+                            )
+                            + 1
+                        )
+
+                    display_text = "".join(buffer)
+                    wrapped_edit = self.wrap_text(
+                        display_text if display_text else " ", left_col_width - 2
+                    )
+
+                    # Display wrapped text inline
+                    for line_idx, line in enumerate(wrapped_edit):
+                        if sentence_row + line_idx < rows:
+                            TerminalControl.move_cursor(sentence_row + line_idx, 4)
+                            if line_idx == 0:
+                                print(f"{Colors.CYAN}► {line}{Colors.RESET}", end="")
+                            else:
+                                print(f"{Colors.CYAN}  {line}{Colors.RESET}", end="")
+                            # Clear rest of line
+                            remaining = left_col_width - len(line) - 2
+                            if remaining > 0:
+                                print(" " * remaining, end="")
+
+                    # Position cursor on the appropriate wrapped line
+                    char_count = 0
+                    cursor_line = 0
+                    cursor_col = 0
+                    for line_idx, line in enumerate(wrapped_edit):
+                        if char_count + len(line) >= cursor_pos:
+                            cursor_line = line_idx
+                            cursor_col = cursor_pos - char_count
+                            break
+                        char_count += len(line) + 1  # +1 for space
+
+                    TerminalControl.move_cursor(
+                        sentence_row + cursor_line, 4 + cursor_col + 2
+                    )
+                    TerminalControl.show_cursor()
+
+                elif self.review_focus == "animations":
                     # Render inline on the right side
                     mid_col = cols // 2
                     right_col_width = cols - mid_col - 4
@@ -368,8 +448,19 @@ class S2SApp:
                     # Determine the row based on whether we're editing or adding
                     current_item = self.items[self.current_index]
                     if self.mode == "edit":
-                        # Editing existing animation
-                        animation_row = sentence_row + self.selected_animation_index
+                        # Check if editing existing or adding new
+                        if (
+                            self.selected_animation_index >= 0
+                            and self.selected_animation_index
+                            < len(current_item["animations"])
+                        ):
+                            # Editing existing animation
+                            animation_row = sentence_row + self.selected_animation_index
+                        else:
+                            # Adding new animation (selected_animation_index is invalid)
+                            animation_row = sentence_row + len(
+                                current_item["animations"]
+                            )
                     else:
                         # Adding new animation
                         animation_row = sentence_row + len(current_item["animations"])
@@ -442,7 +533,38 @@ class S2SApp:
             key = self.read_key()
 
             # Handle keys based on mode
-            if self.mode == "browse":
+            if self.mode == "edit_sentence":
+                # Edit sentence mode: modify the current sentence
+                if key == "\r" or key == "\n":  # Enter - save edit
+                    result = "".join(buffer)
+                    self.mode = "input"
+                    self.current_sentence_edit = ""
+                    return result, "update_sentence"
+                elif key == "\x1b":  # Escape - cancel edit
+                    self.mode = "input"
+                    self.current_sentence_edit = ""
+                    buffer = []
+                    cursor_pos = 0
+                elif key == "\x03":  # Ctrl+C
+                    return "", "quit"
+                elif key == "\x13":  # Ctrl+S
+                    return "", "save"
+                elif key == "\x7f":  # Backspace
+                    if cursor_pos > 0:
+                        buffer.pop(cursor_pos - 1)
+                        cursor_pos -= 1
+                        self.current_sentence_edit = "".join(buffer)
+                elif key == "\x1b[C":  # Right arrow
+                    if cursor_pos < len(buffer):
+                        cursor_pos += 1
+                elif key == "\x1b[D":  # Left arrow
+                    if cursor_pos > 0:
+                        cursor_pos -= 1
+                elif len(key) == 1 and 32 <= ord(key) <= 126:  # Printable characters
+                    buffer.insert(cursor_pos, key)
+                    cursor_pos += 1
+                    self.current_sentence_edit = "".join(buffer)
+            elif self.mode == "browse":
                 # Browse mode: navigate through animations
                 if key == "\x1b":  # Escape - return to input mode
                     self.mode = "input"
@@ -481,20 +603,47 @@ class S2SApp:
                 elif key == "d":  # Delete animation
                     if self.selected_animation_index >= 0:
                         return "", "delete"
+                elif key in ["\x1b[13;2~", "o"]:  # Shift+Enter or 'o' - insert below
+                    if self.view_mode == "review" and self.review_focus == "animations":
+                        return "", "insert_animation"
+                    elif self.view_mode == "review" and self.review_focus == "script":
+                        return "", "insert_sentence"
                 elif (
                     key == "]"
                 ):  # Focus animations (review mode) or next sentence (line-by-line)
                     if self.view_mode == "review":
-                        return "", "focus_animations"
+                        # Loop: if on animations, go to script
+                        if self.review_focus == "animations":
+                            return "", "focus_script"
+                        else:
+                            return "", "focus_animations"
                     else:
                         return "", "skip_next"
                 elif (
                     key == "["
                 ):  # Focus script (review mode) or previous sentence (line-by-line)
                     if self.view_mode == "review":
-                        return "", "focus_script"
+                        # Loop: if on script, go to animations
+                        if self.review_focus == "script":
+                            return "", "focus_animations"
+                        else:
+                            return "", "focus_script"
                     else:
                         return "", "skip_prev"
+                elif key == "\x1b[C":  # Right arrow - switch panes with looping
+                    if self.view_mode == "review":
+                        # Loop: if on animations, go to script
+                        if self.review_focus == "animations":
+                            return "", "focus_script"
+                        else:
+                            return "", "focus_animations"
+                elif key == "\x1b[D":  # Left arrow - switch panes with looping
+                    if self.view_mode == "review":
+                        # Loop: if on script, go to animations
+                        if self.review_focus == "script":
+                            return "", "focus_animations"
+                        else:
+                            return "", "focus_script"
                 elif key == "\x03":  # Ctrl+C
                     return "", "quit"
                 elif key == "\x13":  # Ctrl+S
@@ -507,11 +656,37 @@ class S2SApp:
                 # Edit mode: modify the selected animation
                 if key == "\r" or key == "\n":  # Enter - save edit
                     result = "".join(buffer)
-                    self.mode = "browse"
-                    self.current_animation = ""
-                    return result, "update"
+                    current_item = self.items[self.current_index]
+                    # Check if we're updating an existing animation or adding a new one
+                    if (
+                        self.selected_animation_index >= 0
+                        and self.selected_animation_index
+                        < len(current_item["animations"])
+                    ):
+                        # Updating existing animation
+                        self.mode = "browse"
+                        self.current_animation = ""
+                        return result, "update"
+                    else:
+                        # Adding new animation
+                        self.mode = "input"
+                        self.selected_animation_index = -1
+                        self.current_animation = ""
+                        return result, "add"
                 elif key == "\x1b":  # Escape - cancel edit
-                    self.mode = "browse"
+                    current_item = self.items[self.current_index]
+                    # Return to appropriate mode based on whether we were editing or adding
+                    if (
+                        self.selected_animation_index >= 0
+                        and self.selected_animation_index
+                        < len(current_item["animations"])
+                    ):
+                        # Was editing existing, return to browse
+                        self.mode = "browse"
+                    else:
+                        # Was adding new, return to input
+                        self.mode = "input"
+                        self.selected_animation_index = -1
                     self.current_animation = ""
                     buffer = []
                     cursor_pos = 0
@@ -545,23 +720,26 @@ class S2SApp:
                 elif key == "\x0e":  # Ctrl+N
                     result = "".join(buffer)
                     return result, "next"
-                elif key == "\t":  # Tab - enter browse mode
-                    current_item = self.items[self.current_index]
-                    if current_item["animations"]:
-                        self.mode = "browse"
-                        self.selected_animation_index = 0
                 elif (
                     key == "]"
                 ):  # Focus animations (review mode) or next sentence (line-by-line)
                     if self.view_mode == "review":
-                        return "", "focus_animations"
+                        # Loop: if on animations, go to script
+                        if self.review_focus == "animations":
+                            return "", "focus_script"
+                        else:
+                            return "", "focus_animations"
                     else:
                         return "", "skip_next"
                 elif (
                     key == "["
                 ):  # Focus script (review mode) or previous sentence (line-by-line)
                     if self.view_mode == "review":
-                        return "", "focus_script"
+                        # Loop: if on script, go to animations
+                        if self.review_focus == "script":
+                            return "", "focus_animations"
+                        else:
+                            return "", "focus_script"
                     else:
                         return "", "skip_prev"
                 elif key == "\x03":  # Ctrl+C
@@ -579,16 +757,48 @@ class S2SApp:
                     self.mode = "edit"
                     buffer = list(self.current_animation)
                     cursor_pos = len(buffer)
+                elif (
+                    key == "i"
+                    and self.view_mode == "review"
+                    and self.review_focus == "script"
+                ):
+                    # Enter sentence edit mode when focused on script
+                    current_item = self.items[self.current_index]
+                    self.mode = "edit_sentence"
+                    self.current_sentence_edit = current_item["sentence"]
+                    buffer = list(self.current_sentence_edit)
+                    cursor_pos = len(buffer)
+                elif (
+                    key == "d"
+                    and self.view_mode == "review"
+                    and self.review_focus == "script"
+                ):
+                    # Delete sentence when focused on script
+                    return "", "delete_sentence"
                 elif key == "\x7f":  # Backspace
                     if cursor_pos > 0:
                         buffer.pop(cursor_pos - 1)
                         cursor_pos -= 1
                         self.current_animation = "".join(buffer)
                 elif key == "\x1b[C":  # Right arrow
-                    if cursor_pos < len(buffer):
+                    # In review mode with no buffer, switch panes (with looping)
+                    if self.view_mode == "review" and len(buffer) == 0:
+                        # Loop: if on animations, go to script
+                        if self.review_focus == "animations":
+                            return "", "focus_script"
+                        else:
+                            return "", "focus_animations"
+                    elif cursor_pos < len(buffer):
                         cursor_pos += 1
                 elif key == "\x1b[D":  # Left arrow
-                    if cursor_pos > 0:
+                    # In review mode with no buffer, switch panes (with looping)
+                    if self.view_mode == "review" and len(buffer) == 0:
+                        # Loop: if on script, go to animations
+                        if self.review_focus == "script":
+                            return "", "focus_animations"
+                        else:
+                            return "", "focus_script"
+                    elif cursor_pos > 0:
                         cursor_pos -= 1
                 elif (
                     key == "\x1b[A"
@@ -650,6 +860,20 @@ class S2SApp:
                         if self.selected_animation_index < 0:
                             self.selected_animation_index = 0
                         return "", "delete"
+                elif (
+                    key in ["\x1b[13;2~", "o"]
+                    and self.view_mode == "review"
+                    and self.review_focus == "animations"
+                ):
+                    # Shift+Enter or 'o': Insert blank animation after current selection
+                    return "", "insert_animation"
+                elif (
+                    key in ["\x1b[13;2~", "o"]
+                    and self.view_mode == "review"
+                    and self.review_focus == "script"
+                ):
+                    # Shift+Enter or 'o': Insert blank sentence after current one
+                    return "", "insert_sentence"
                 elif key == "?" and len(buffer) == 0:
                     # Toggle help only when buffer is empty (not actively typing)
                     self.show_help = not self.show_help
@@ -694,15 +918,15 @@ class S2SApp:
             "Navigation:",
             "  ↑/k         Move up",
             "  ↓/j         Move down",
-            "  [           Focus script column (Review) / Previous sentence",
-            "  ]           Focus animations column (Review) / Next sentence",
+            "  [ or ←      Switch to script/prev sentence (loops in Review)",
+            "  ] or →      Switch to animations/next sentence (loops in Review)",
             "",
-            "Editing:",
-            "  Tab         Enter browse mode (navigate animations)",
-            "  i           Enter insert mode (add/edit animation)",
-            "  d           Delete animation (when browsing)",
-            "  Enter       Save/add animation",
-            "  Esc         Cancel / Return to normal mode",
+            "Editing (Review Mode):",
+            "  i           Edit sentence (script) / Edit animation (animations)",
+            "  o/Shift+↵   Insert blank sentence/animation below current",
+            "  d           Delete sentence (script) / Delete animation (animations)",
+            "  Enter       Save changes",
+            "  Esc         Cancel edit / Return to normal mode",
             "",
             "Views:",
             "  Ctrl+V      Toggle between Line-by-line and Review",
@@ -1109,6 +1333,15 @@ class S2SApp:
                     TerminalControl.move_cursor(current_row, mid_col + 2)
                     print(f"{Colors.CYAN}> [ ] {Colors.RESET}", end="")
                     # The actual text will be rendered by get_input_line
+                elif (
+                    is_current
+                    and self.review_focus == "animations"
+                    and self.mode == "edit"
+                ):
+                    # Show edit prompt when editing new animation on empty animations
+                    TerminalControl.move_cursor(current_row, mid_col + 2)
+                    print(f"{Colors.CYAN}{Colors.BOLD}> [ ] {Colors.RESET}", end="")
+                    # The actual text will be rendered by get_input_line
                 elif is_current:
                     TerminalControl.move_cursor(current_row, mid_col + 2)
                     print(f"{Colors.DIM}(no animations){Colors.RESET}", end="")
@@ -1137,14 +1370,16 @@ class S2SApp:
         # Help text (always at bottom of window, concise to fit on one line)
         TerminalControl.move_cursor(rows, 2)
         if self.mode == "browse":
-            help_text = f"{Colors.DIM}i: insert | [: script | ]: anims | Ctrl+V: line-by-line | Ctrl+S: save | Ctrl+C: quit{Colors.RESET}"
+            help_text = f"{Colors.DIM}i: edit | o: insert | d: delete | [←/]→: switch panes | Ctrl+V: line-by-line | Ctrl+C: quit{Colors.RESET}"
         elif self.mode == "edit":
-            help_text = f"{Colors.DIM}INSERT MODE | Enter: save | Esc: normal | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
+            help_text = f"{Colors.DIM}EDIT MODE | Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
+        elif self.mode == "edit_sentence":
+            help_text = f"{Colors.DIM}EDIT SENTENCE | Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
         else:
             if self.review_focus == "script":
-                help_text = f"{Colors.DIM}]: anims | Ctrl+V: line-by-line | Ctrl+S: save | Ctrl+C: quit{Colors.RESET}"
+                help_text = f"{Colors.DIM}i: edit | o: insert below | d: delete | [←/]→: switch | ↑↓: navigate | Ctrl+V: line-by-line{Colors.RESET}"
             else:
-                help_text = f"{Colors.DIM}i: insert | [: script | Ctrl+V: line-by-line | Ctrl+S: save | Ctrl+C: quit{Colors.RESET}"
+                help_text = f"{Colors.DIM}i: edit | o: insert below | d: delete | [←/]→: switch | ↑↓: navigate | Ctrl+V: line-by-line{Colors.RESET}"
 
         # Truncate to terminal width to prevent wrapping
         print(help_text[: cols - 2], end="")
@@ -1380,6 +1615,67 @@ class S2SApp:
                                 self.selected_animation_index = -1
                         # Auto-save progress after deleting
                         self._save_progress()
+                elif action == "update_sentence":
+                    # Update the current sentence
+                    if text.strip():
+                        self.items[self.current_index]["sentence"] = text.strip()
+                        # Auto-save progress after updating sentence
+                        self._save_progress()
+                elif action == "delete_sentence":
+                    # Delete the current sentence and its animations
+                    if len(self.items) > 1:  # Don't delete if it's the only sentence
+                        self.items.pop(self.current_index)
+                        # Adjust current index if needed
+                        if self.current_index >= len(self.items):
+                            self.current_index = len(self.items) - 1
+                        # Reset mode and selection
+                        self.mode = "input"
+                        self.selected_animation_index = -1
+                        # Auto-save progress after deleting
+                        self._save_progress()
+                elif action == "insert_animation":
+                    # Insert a blank animation after the currently selected one
+                    current_item = self.items[self.current_index]
+                    # Determine insert position
+                    if (
+                        self.selected_animation_index < 0
+                        or not current_item["animations"]
+                    ):
+                        # No selection or no animations, insert at beginning
+                        insert_pos = 0
+                    else:
+                        # Insert after the selected animation
+                        insert_pos = self.selected_animation_index + 1
+
+                    # Insert blank animation
+                    current_item["animations"].insert(insert_pos, "")
+
+                    # Enter edit mode for the new animation
+                    self.selected_animation_index = insert_pos
+                    self.mode = "edit"
+                    self.current_animation = ""
+                    # Don't save yet - wait for user to add content
+                elif action == "insert_sentence":
+                    # Insert a blank sentence after the current one
+                    current_item = self.items[self.current_index]
+
+                    # Create new sentence item with same section
+                    new_item = {
+                        "section": current_item["section"],
+                        "sentence": "",
+                        "animations": [],
+                    }
+
+                    # Insert after current sentence
+                    insert_pos = self.current_index + 1
+                    self.items.insert(insert_pos, new_item)
+
+                    # Move to the new sentence and enter edit mode
+                    self.current_index = insert_pos
+                    self.mode = "edit_sentence"
+                    self.current_sentence_edit = ""
+                    self.selected_animation_index = -1
+                    # Don't save yet - wait for user to add content
                 elif action == "next":
                     if text.strip():
                         self.items[self.current_index]["animations"].append(
