@@ -366,7 +366,7 @@ class S2SApp:
                         if item["section"] != last_section:
                             if last_section is not None:
                                 sentence_row += 1  # spacing before section
-                            sentence_row += 1  # section header
+                            sentence_row += 1  # section header row
                             last_section = item["section"]
 
                         wrapped = self.wrap_text(item["sentence"], left_col_width)
@@ -377,6 +377,13 @@ class S2SApp:
                             )
                             + 1
                         )
+
+                    # Check if current sentence is in a new section
+                    current_item = self.items[self.current_index]
+                    if current_item["section"] != last_section:
+                        if last_section is not None:
+                            sentence_row += 1  # spacing before section
+                        sentence_row += 1  # section header row
 
                     display_text = "".join(buffer)
                     wrapped_edit = self.wrap_text(
@@ -432,7 +439,7 @@ class S2SApp:
                         if item["section"] != last_section:
                             if last_section is not None:
                                 sentence_row += 1  # spacing before section
-                            sentence_row += 1  # section header
+                            sentence_row += 1  # section header row
                             last_section = item["section"]
 
                         left_col_width = mid_col - 4
@@ -445,8 +452,12 @@ class S2SApp:
                             + 1
                         )
 
-                    # Determine the row based on whether we're editing or adding
+                    # Check if current sentence is in a new section
                     current_item = self.items[self.current_index]
+                    if current_item["section"] != last_section:
+                        if last_section is not None:
+                            sentence_row += 1  # spacing before section
+                        sentence_row += 1  # section header row
                     if self.mode == "edit":
                         # Check if editing existing or adding new
                         if (
@@ -1183,13 +1194,12 @@ class S2SApp:
             # Track section header positions
             if item["section"] != last_section:
                 if current_row > content_start_row:
-                    section_header_rows.add(current_row - 1)  # Space before
+                    section_header_rows.add(current_row)  # Space before section
                     current_row += 1
                 if current_row >= content_end_row:
                     break
 
-                section_header_rows.add(current_row)  # Section header row
-                section_header_rows.add(current_row + 1)  # Space after
+                section_header_rows.add(current_row)  # Section header row itself
                 current_row += 1
                 last_section = item["section"]
 
