@@ -9,9 +9,11 @@ import os
 import sys
 from pathlib import Path
 
-# Add parent directory to path to import s2s
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from s2s import ScriptParser, StoryboardGenerator, S2SApp
+# Add src directory to path to import s2s
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
+from s2s.cli import ScriptParser, StoryboardGenerator, S2SApp
 
 
 class TestScriptParser(unittest.TestCase):

@@ -13,10 +13,31 @@ A command-line tool to convert video scripts into animation storyboards interact
 
 ## Installation
 
+### Binary Installation (Recommended)
+
+Download pre-built binaries for macOS and Linux from the [releases page](https://github.com/dnsimple/s2s/releases).
+
+**Quick install (macOS/Linux):**
+```bash
+# Download and extract the latest release for your platform
+# Then move to your PATH
+sudo mv s2s /usr/local/bin/
+chmod +x /usr/local/bin/s2s
+```
+
+See [docs/INSTALL.md](docs/INSTALL.md) for detailed installation instructions.
+
+### From Source
+
 No external dependencies required! Uses only Python 3 standard library.
 
 ```bash
-chmod +x s2s.py
+# Run as a module
+python3 -m s2s "path/to/script.md"
+
+# Or install in development mode
+pip install -e .
+s2s "path/to/script.md"
 ```
 
 ### Development Setup
@@ -36,23 +57,26 @@ Available make commands:
 - `make test` - Run tests
 - `make lint` - Run all pre-commit checks
 - `make check` - Check formatting without modifying files
+- `make build` - Build binary for current platform
+- `make dist` - Create distribution package
+- `make clean` - Clean build artifacts
 
 ## Usage
 
+If you installed the binary:
 ```bash
-./s2s.py "path/to/script.md"
+s2s "path/to/script.md"
 ```
 
-Or with python directly:
-
+Or run from source:
 ```bash
-python3 s2s.py "path/to/script.md"
+python3 -m s2s "path/to/script.md"
 ```
 
 ### Example
 
 ```bash
-./s2s.py "examples/Vanity Name Servers Script.md"
+s2s "examples/Vanity Name Servers Script.md"
 ```
 
 ## Interface

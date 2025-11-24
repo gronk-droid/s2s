@@ -5,12 +5,23 @@ description = "Convert video scripts to animation storyboards interactively"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+s2s = "s2s.cli:main"
+
 [dependency-groups]
 dev = [
     "black>=25.11.0",
     "pre-commit>=4.4.0",
     "pytest>=9.0.1",
+    "pyinstaller>=6.0.0",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/s2s"]
 
 [tool.black]
 line-length = 88

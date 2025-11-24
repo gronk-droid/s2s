@@ -5,11 +5,78 @@
 !/main.py
 !/Makefile
 !/pyproject.toml
-!/QUICKSTART.md
 !/README.md
 !/requirements.txt
 !/s2s.py
+!/s2s.spec
+!/STRUCTURE.md
+!/VERSION
+!/uv.lock
 
-# Allow tests directory
+# Allow directories
+!/.github/
+!/.github/**
+!/docs/
+!/docs/**
+!/examples/
+!/examples/**
+!/scripts/
+!/scripts/**
+!/src/
+!/src/**
+!/storyboards/
+!/storyboards/**
 !/tests/
 !/tests/**
+
+# Build artifacts
+/build/
+/dist/
+*.spec.bak
+*.pyc
+__pycache__/
+*.egg-info/
+.cache/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+
+# Test and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Linter and type checker caches
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment and local configs
+.env
+.env.local
+*.local
+
+# User-specific files
+*.log
+*.tmp

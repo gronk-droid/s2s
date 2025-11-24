@@ -1,4 +1,4 @@
-.PHONY: format test lint check install
+.PHONY: format test lint check install build clean dist
 
 # Format code with Black
 format:
@@ -20,3 +20,23 @@ check:
 install:
 	uv sync
 	uv run pre-commit install
+
+# Build binary for current platform
+build:
+	PYTHONPATH=src uv run pyinstaller s2s.spec --clean
+
+# Build binary and create distribution package
+dist: clean build
+	mkdir -p dist/s2s-$(shell uname -s)-$(shell uname -m)
+	cp dist/s2s dist/s2s-$(shell uname -s)-$(shell uname -m)/
+	cp README.md dist/s2s-$(shell uname -s)-$(shell uname -m)/
+	cp docs/INSTALL.md dist/s2s-$(shell uname -s)-$(shell uname -m)/ || true
+	cd dist && tar -czf s2s-$(shell uname -s)-$(shell uname -m).tar.gz s2s-$(shell uname -s)-$(shell uname -m)
+	@echo "Distribution package created: dist/s2s-$(shell uname -s)-$(shell uname -m).tar.gz"
+
+# Clean build artifacts
+clean:
+	rm -rf build dist __pycache__ *.spec.bak
+	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
