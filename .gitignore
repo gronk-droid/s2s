@@ -1,31 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-.pytest_cache/
+/*
 
-# Virtual environments
-venv/
-env/
-ENV/
+# Allow specific files in root
+!/.gitignore
+!/main.py
+!/Makefile
+!/pyproject.toml
+!/QUICKSTART.md
+!/README.md
+!/requirements.txt
+!/s2s.py
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Generated storyboard files (optional - uncomment if you don't want to track them)
-# *Storyboard.md
-
-*Storyboard.md
-storyboards/
-uv.lock
-examples/
+# Allow tests directory
+!/tests/
+!/tests/**
