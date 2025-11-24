@@ -1,0 +1,34 @@
+[project]
+name = "s2s"
+version = "0.1.0"
+description = "Convert video scripts to animation storyboards interactively"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "black>=25.11.0",
+    "pre-commit>=4.4.0",
+    "pytest>=9.0.1",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

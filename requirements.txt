@@ -1,0 +1,6 @@
+# s2s (script2storyboard) requirements
+#
+# This project uses only Python 3 standard library modules.
+# No external dependencies are required.
+#
+# Minimum Python version: 3.6+
