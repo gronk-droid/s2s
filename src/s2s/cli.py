@@ -1621,7 +1621,7 @@ class S2SApp:
         if video_name.endswith(" Script"):
             video_name = video_name[:-7]  # Remove " Script"
 
-        # Add " Storyboard" and construct path in script's directory
+        # Create storyboard filename (without "Script" word) in script's directory
         output_filename = video_name + " Storyboard.md"
         output_path = input_path.parent / output_filename
         return str(output_path)
@@ -1728,7 +1728,11 @@ class S2SApp:
         else:
             # Use default path in storyboards/ directory (for quick saves)
             input_path = Path(self.script_file)
-            output_filename = input_path.stem + " Storyboard.md"
+            video_name = input_path.stem
+            # Remove " Script" from the end of the filename if present
+            if video_name.endswith(" Script"):
+                video_name = video_name[:-7]  # Remove " Script"
+            output_filename = video_name + " Storyboard.md"
             storyboards_dir = Path("storyboards")
             storyboards_dir.mkdir(exist_ok=True)
             output_path = storyboards_dir / output_filename
