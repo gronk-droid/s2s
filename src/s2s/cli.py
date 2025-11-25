@@ -1512,17 +1512,35 @@ class S2SApp:
             if (
                 is_current
                 and self.review_focus == "animations"
-                and self.mode == "input"
+                and self.mode in ["input", "edit"]
                 and animations
             ):
-                # Show input line below last animation
-                new_anim_row = (
-                    current_row - max(sentence_lines, len(animations)) + len(animations)
+                # Determine if we're adding a new animation (not editing an existing one)
+                adding_new = self.mode == "input" or (
+                    self.mode == "edit"
+                    and (
+                        self.selected_animation_index < 0
+                        or self.selected_animation_index >= len(animations)
+                    )
                 )
-                if new_anim_row < content_end_row:
-                    TerminalControl.move_cursor(new_anim_row, mid_col + 2)
-                    print(f"{Colors.CYAN}+ [ ] {Colors.RESET}", end="")
-                    # The actual text will be rendered by get_input_line
+
+                if adding_new:
+                    # Show input line below last animation
+                    new_anim_row = (
+                        current_row
+                        - max(sentence_lines, len(animations))
+                        + len(animations)
+                    )
+                    if new_anim_row < content_end_row:
+                        TerminalControl.move_cursor(new_anim_row, mid_col + 2)
+                        if self.mode == "edit":
+                            print(
+                                f"{Colors.CYAN}{Colors.BOLD}> [ ] {Colors.RESET}",
+                                end="",
+                            )
+                        else:
+                            print(f"{Colors.CYAN}> [ ] {Colors.RESET}", end="")
+                        # The actual text will be rendered by get_input_line
 
             # Add small spacing between sentences
             current_row += 1
