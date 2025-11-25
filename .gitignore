@@ -11,15 +11,12 @@
 !/s2s.spec
 !/STRUCTURE.md
 !/VERSION
-!/uv.lock
 
 # Allow directories
 !/.github/
 !/.github/**
 !/docs/
 !/docs/**
-!/examples/
-!/examples/**
 !/scripts/
 !/scripts/**
 !/src/
