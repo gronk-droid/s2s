@@ -774,6 +774,27 @@ class S2SApp:
                         self.selected_animation_index = -1
                         self.current_animation = ""
                         return result, "add"
+                elif (
+                    key == "\x1b[13;2~"
+                ):  # Shift+Enter - save and move to next sentence
+                    result = "".join(buffer)
+                    current_item = self.items[self.current_index]
+                    # Check if we're updating an existing animation or adding a new one
+                    if (
+                        self.selected_animation_index >= 0
+                        and self.selected_animation_index
+                        < len(current_item["animations"])
+                    ):
+                        # Updating existing animation
+                        self.mode = "input"
+                        self.current_animation = ""
+                        return result, "update_and_next"
+                    else:
+                        # Adding new animation
+                        self.mode = "input"
+                        self.selected_animation_index = -1
+                        self.current_animation = ""
+                        return result, "add_and_next"
                 elif key == "\x1b":  # Escape - cancel edit
                     current_item = self.items[self.current_index]
                     # Return to appropriate mode based on whether we were editing or adding
@@ -1280,7 +1301,7 @@ class S2SApp:
         if self.mode == "browse":
             help_text = f"{Colors.DIM}i: edit | d: delete | Esc: back | [: prev | ]: next | Ctrl+V: review | Ctrl+S: save | Ctrl+C: quit{Colors.RESET}"
         elif self.mode == "edit":
-            help_text = f"{Colors.DIM}Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
+            help_text = f"{Colors.DIM}Enter: save | Shift+↵: save & next | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
         else:
             help_text = f"{Colors.DIM}Enter: add | Tab: browse | Ctrl+N: next | [: prev | ]: next | Ctrl+V: review | Ctrl+S: save | Ctrl+C: quit{Colors.RESET}"
 
@@ -1551,7 +1572,10 @@ class S2SApp:
         if self.mode == "browse":
             help_text = f"{Colors.DIM}i: edit | o/O: insert | d: delete | ←/→: switch panes | Ctrl+V: line-by-line | Ctrl+C: quit{Colors.RESET}"
         elif self.mode == "edit":
-            help_text = f"{Colors.DIM}EDIT MODE | Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
+            if self.view_mode == "review" and self.review_focus == "animations":
+                help_text = f"{Colors.DIM}EDIT MODE | Enter: save | Shift+↵: save & next | Esc: cancel | Ctrl+S: save all{Colors.RESET}"
+            else:
+                help_text = f"{Colors.DIM}EDIT MODE | Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
         elif self.mode == "edit_sentence":
             help_text = f"{Colors.DIM}EDIT SENTENCE | Enter: save | Esc: cancel | Ctrl+S: save all | Ctrl+C: quit{Colors.RESET}"
         else:
@@ -1771,6 +1795,121 @@ class S2SApp:
                             ] = text.strip()
                         # Auto-save progress after updating
                         self._save_progress()
+                elif action == "add_and_next":
+                    # Add animation and move to next sentence
+                    if text.strip():
+                        self.items[self.current_index]["animations"].append(
+                            text.strip()
+                        )
+                    # Move to next sentence
+                    if self.current_index < len(self.items) - 1:
+                        self.current_index += 1
+                        self.current_animation = ""
+                        self.selected_animation_index = -1
+
+                        # Adjust scroll to keep current sentence visible in review mode
+                        if self.view_mode == "review":
+                            rows, cols = TerminalControl.get_terminal_size()
+                            mid_col = cols // 2
+                            left_col_width = mid_col - 4
+
+                            # Calculate cumulative rows from scroll offset to current
+                            cumulative_rows = 0
+                            last_section = None
+                            for i in range(
+                                self.review_scroll_offset, self.current_index + 1
+                            ):
+                                if i >= len(self.items):
+                                    break
+                                item = self.items[i]
+
+                                # Add section header space
+                                if item["section"] != last_section:
+                                    if last_section is not None:
+                                        cumulative_rows += 1  # spacing before section
+                                    cumulative_rows += 1  # section title
+                                    last_section = item["section"]
+
+                                # Add sentence space
+                                wrapped = self.wrap_text(
+                                    item["sentence"], left_col_width
+                                )
+                                num_anims = (
+                                    len(item["animations"]) if item["animations"] else 1
+                                )
+                                cumulative_rows += max(len(wrapped), num_anims)
+                                cumulative_rows += 1  # spacing after sentence
+
+                            # Scroll down if current sentence is below visible area
+                            visible_rows = rows - 8  # Account for headers and help text
+                            if cumulative_rows > visible_rows:
+                                self.review_scroll_offset += 1
+
+                        # Keep focus on animations
+                        self.review_focus = "animations"
+                        self.mode = "input"
+                    # Auto-save progress after adding and moving
+                    self._save_progress()
+                elif action == "update_and_next":
+                    # Update animation and move to next sentence
+                    if text.strip() and self.selected_animation_index >= 0:
+                        current_item = self.items[self.current_index]
+                        if self.selected_animation_index < len(
+                            current_item["animations"]
+                        ):
+                            current_item["animations"][
+                                self.selected_animation_index
+                            ] = text.strip()
+
+                    # Move to next sentence
+                    if self.current_index < len(self.items) - 1:
+                        self.current_index += 1
+                        self.current_animation = ""
+                        self.selected_animation_index = -1
+
+                        # Adjust scroll to keep current sentence visible in review mode
+                        if self.view_mode == "review":
+                            rows, cols = TerminalControl.get_terminal_size()
+                            mid_col = cols // 2
+                            left_col_width = mid_col - 4
+
+                            # Calculate cumulative rows from scroll offset to current
+                            cumulative_rows = 0
+                            last_section = None
+                            for i in range(
+                                self.review_scroll_offset, self.current_index + 1
+                            ):
+                                if i >= len(self.items):
+                                    break
+                                item = self.items[i]
+
+                                # Add section header space
+                                if item["section"] != last_section:
+                                    if last_section is not None:
+                                        cumulative_rows += 1  # spacing before section
+                                    cumulative_rows += 1  # section title
+                                    last_section = item["section"]
+
+                                # Add sentence space
+                                wrapped = self.wrap_text(
+                                    item["sentence"], left_col_width
+                                )
+                                num_anims = (
+                                    len(item["animations"]) if item["animations"] else 1
+                                )
+                                cumulative_rows += max(len(wrapped), num_anims)
+                                cumulative_rows += 1  # spacing after sentence
+
+                            # Scroll down if current sentence is below visible area
+                            visible_rows = rows - 8  # Account for headers and help text
+                            if cumulative_rows > visible_rows:
+                                self.review_scroll_offset += 1
+
+                        # Keep focus on animations
+                        self.review_focus = "animations"
+                        self.mode = "input"
+                    # Auto-save progress after updating and moving
+                    self._save_progress()
                 elif action == "delete":
                     # Delete the selected animation
                     if self.selected_animation_index >= 0:
