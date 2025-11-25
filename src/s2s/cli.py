@@ -329,6 +329,65 @@ class S2SApp:
 
         return char
 
+    def find_next_word_boundary(self, text: str, pos: int) -> int:
+        """Find the next word boundary for cursor movement"""
+        if pos >= len(text):
+            return len(text)
+
+        # Skip current word
+        while pos < len(text) and text[pos] not in (" ", "\t", "\n"):
+            pos += 1
+
+        # Skip whitespace
+        while pos < len(text) and text[pos] in (" ", "\t", "\n"):
+            pos += 1
+
+        return pos
+
+    def find_prev_word_boundary(self, text: str, pos: int) -> int:
+        """Find the previous word boundary for cursor movement"""
+        if pos <= 0:
+            return 0
+
+        # Move back one position
+        pos -= 1
+
+        # Skip whitespace
+        while pos > 0 and text[pos] in (" ", "\t", "\n"):
+            pos -= 1
+
+        # Skip current word
+        while pos > 0 and text[pos - 1] not in (" ", "\t", "\n"):
+            pos -= 1
+
+        return pos
+
+    def delete_word_backward(self, buffer: list, cursor_pos: int) -> tuple:
+        """Delete word backward from cursor position, returns (new_buffer, new_cursor_pos)"""
+        if cursor_pos <= 0:
+            return buffer, cursor_pos
+
+        text = "".join(buffer)
+        new_pos = self.find_prev_word_boundary(text, cursor_pos)
+
+        # Delete from new_pos to cursor_pos
+        del buffer[new_pos:cursor_pos]
+
+        return buffer, new_pos
+
+    def delete_word_forward(self, buffer: list, cursor_pos: int) -> tuple:
+        """Delete word forward from cursor position, returns (new_buffer, new_cursor_pos)"""
+        if cursor_pos >= len(buffer):
+            return buffer, cursor_pos
+
+        text = "".join(buffer)
+        end_pos = self.find_next_word_boundary(text, cursor_pos)
+
+        # Delete from cursor_pos to end_pos
+        del buffer[cursor_pos:end_pos]
+
+        return buffer, cursor_pos
+
     def get_input_line(self) -> Tuple[str, str]:
         """Get input line with editing support, returns (text, action)"""
         # Determine which buffer to use based on mode
@@ -565,12 +624,38 @@ class S2SApp:
                         buffer.pop(cursor_pos - 1)
                         cursor_pos -= 1
                         self.current_sentence_edit = "".join(buffer)
+                elif key == "\x17":  # Ctrl+W - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_sentence_edit = "".join(buffer)
+                elif key == "\x1b\x7f":  # Alt+Backspace - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_sentence_edit = "".join(buffer)
+                elif key == "\x1bd":  # Alt+D - Delete word forward
+                    buffer, cursor_pos = self.delete_word_forward(buffer, cursor_pos)
+                    self.current_sentence_edit = "".join(buffer)
+                elif key == "\x15":  # Ctrl+U - Delete to beginning of line
+                    del buffer[0:cursor_pos]
+                    cursor_pos = 0
+                    self.current_sentence_edit = "".join(buffer)
+                elif key == "\x0b":  # Ctrl+K - Delete to end of line
+                    del buffer[cursor_pos:]
+                    self.current_sentence_edit = "".join(buffer)
                 elif key == "\x1b[C":  # Right arrow
                     if cursor_pos < len(buffer):
                         cursor_pos += 1
                 elif key == "\x1b[D":  # Left arrow
                     if cursor_pos > 0:
                         cursor_pos -= 1
+                elif key == "\x1b[1;5C":  # Ctrl+Right arrow - next word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_next_word_boundary(text, cursor_pos)
+                elif key == "\x1b[1;5D":  # Ctrl+Left arrow - previous word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_prev_word_boundary(text, cursor_pos)
+                elif key == "\x1b[H" or key == "\x01":  # Home or Ctrl+A
+                    cursor_pos = 0
+                elif key == "\x1b[F" or key == "\x05":  # End or Ctrl+E
+                    cursor_pos = len(buffer)
                 elif len(key) == 1 and 32 <= ord(key) <= 126:  # Printable characters
                     buffer.insert(cursor_pos, key)
                     cursor_pos += 1
@@ -715,12 +800,38 @@ class S2SApp:
                         buffer.pop(cursor_pos - 1)
                         cursor_pos -= 1
                         self.current_animation = "".join(buffer)
+                elif key == "\x17":  # Ctrl+W - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x1b\x7f":  # Alt+Backspace - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x1bd":  # Alt+D - Delete word forward
+                    buffer, cursor_pos = self.delete_word_forward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x15":  # Ctrl+U - Delete to beginning of line
+                    del buffer[0:cursor_pos]
+                    cursor_pos = 0
+                    self.current_animation = "".join(buffer)
+                elif key == "\x0b":  # Ctrl+K - Delete to end of line
+                    del buffer[cursor_pos:]
+                    self.current_animation = "".join(buffer)
                 elif key == "\x1b[C":  # Right arrow
                     if cursor_pos < len(buffer):
                         cursor_pos += 1
                 elif key == "\x1b[D":  # Left arrow
                     if cursor_pos > 0:
                         cursor_pos -= 1
+                elif key == "\x1b[1;5C":  # Ctrl+Right arrow - next word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_next_word_boundary(text, cursor_pos)
+                elif key == "\x1b[1;5D":  # Ctrl+Left arrow - previous word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_prev_word_boundary(text, cursor_pos)
+                elif key == "\x1b[H" or key == "\x01":  # Home or Ctrl+A
+                    cursor_pos = 0
+                elif key == "\x1b[F" or key == "\x05":  # End or Ctrl+E
+                    cursor_pos = len(buffer)
                 elif len(key) == 1 and 32 <= ord(key) <= 126:  # Printable characters
                     buffer.insert(cursor_pos, key)
                     cursor_pos += 1
@@ -794,6 +905,22 @@ class S2SApp:
                         buffer.pop(cursor_pos - 1)
                         cursor_pos -= 1
                         self.current_animation = "".join(buffer)
+                elif key == "\x17":  # Ctrl+W - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x1b\x7f":  # Alt+Backspace - Delete word backward
+                    buffer, cursor_pos = self.delete_word_backward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x1bd":  # Alt+D - Delete word forward
+                    buffer, cursor_pos = self.delete_word_forward(buffer, cursor_pos)
+                    self.current_animation = "".join(buffer)
+                elif key == "\x15":  # Ctrl+U - Delete to beginning of line
+                    del buffer[0:cursor_pos]
+                    cursor_pos = 0
+                    self.current_animation = "".join(buffer)
+                elif key == "\x0b":  # Ctrl+K - Delete to end of line
+                    del buffer[cursor_pos:]
+                    self.current_animation = "".join(buffer)
                 elif key == "\x1b[C":  # Right arrow
                     # In review mode with no buffer, switch panes (with looping)
                     if self.view_mode == "review" and len(buffer) == 0:
@@ -814,6 +941,16 @@ class S2SApp:
                             return "", "focus_script"
                     elif cursor_pos > 0:
                         cursor_pos -= 1
+                elif key == "\x1b[1;5C":  # Ctrl+Right arrow - next word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_next_word_boundary(text, cursor_pos)
+                elif key == "\x1b[1;5D":  # Ctrl+Left arrow - previous word
+                    text = "".join(buffer)
+                    cursor_pos = self.find_prev_word_boundary(text, cursor_pos)
+                elif key == "\x1b[H" or key == "\x01":  # Home or Ctrl+A
+                    cursor_pos = 0
+                elif key == "\x1b[F" or key == "\x05":  # End or Ctrl+E
+                    cursor_pos = len(buffer)
                 elif (
                     key == "\x1b[A"
                 ):  # Up arrow - navigate in review mode, history in line-by-line
