@@ -1,6 +1,6 @@
 [project]
 name = "s2s"
-version = "0.2.1"
+version = "0.3.0"
 description = "Convert video scripts to animation storyboards interactively"
 requires-python = ">=3.10"
 dependencies = []
