@@ -154,6 +154,38 @@ class ScriptParser:
         return cleaned
 
 
+class ScriptGenerator:
+    """Generate script markdown files from edited items"""
+
+    @staticmethod
+    def generate(items: List[Dict]) -> str:
+        """Generate script markdown content from items"""
+        lines = []
+
+        # Group items by section
+        sections = {}
+        section_order = []
+        for item in items:
+            section_title = item["section"]
+            if section_title not in sections:
+                sections[section_title] = []
+                section_order.append(section_title)
+            sections[section_title].append(item["sentence"])
+
+        # Generate markdown
+        for section_title in section_order:
+            lines.append(f"# {section_title}")
+            lines.append("")
+
+            # Add all sentences for this section
+            for sentence in sections[section_title]:
+                if sentence.strip():  # Only add non-empty sentences
+                    lines.append(sentence)
+                    lines.append("")
+
+        return "\n".join(lines)
+
+
 class StoryboardGenerator:
     """Generate storyboard markdown files"""
 
@@ -226,22 +258,99 @@ class S2SApp:
         self.review_focus = "script"  # 'script' or 'animations' - which column is focused in review mode
         self.show_help = False  # Toggle detailed help with ?
 
+        # Track if script content has been modified
+        self.script_modified = False
+
         # Load progress from cache if it exists
         self._load_progress()
 
+    def _compute_script_hash(self) -> str:
+        """Compute hash of the script file content"""
+        with open(self.script_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    def _merge_animations_after_script_change(self, cached_items: List[Dict]):
+        """Merge animations from cached items into newly parsed items after script file changed"""
+        # Build a mapping of old sentences to their animations
+        old_animations = {}
+        for cached_item in cached_items:
+            sentence = cached_item["sentence"]
+            if cached_item["animations"]:
+                old_animations[sentence] = cached_item["animations"]
+
+        # Try to match new sentences with old ones
+        # Use exact matching first, then fuzzy matching for modified sentences
+        for item in self.items:
+            sentence = item["sentence"]
+
+            # Exact match
+            if sentence in old_animations:
+                item["animations"] = old_animations[sentence]
+            else:
+                # Try fuzzy matching - find sentences that are similar
+                # Use simple word-based similarity
+                best_match = None
+                best_similarity = 0.0
+
+                sentence_words = set(sentence.lower().split())
+
+                for old_sentence, animations in old_animations.items():
+                    old_words = set(old_sentence.lower().split())
+
+                    # Calculate Jaccard similarity (intersection / union)
+                    if len(sentence_words) > 0 and len(old_words) > 0:
+                        intersection = len(sentence_words & old_words)
+                        union = len(sentence_words | old_words)
+                        similarity = intersection / union
+
+                        # Only consider matches above 70% similarity
+                        if similarity > best_similarity and similarity > 0.7:
+                            best_similarity = similarity
+                            best_match = old_sentence
+
+                # If we found a good match, use those animations
+                if best_match:
+                    item["animations"] = old_animations[best_match]
+
+    def _rebuild_sections_from_items(self):
+        """Rebuild sections list from items (used when script is modified)"""
+        sections = []
+        current_section = None
+
+        for item in self.items:
+            section_title = item["section"]
+
+            # Start new section if needed
+            if current_section is None or current_section["title"] != section_title:
+                if current_section:
+                    sections.append(current_section)
+                current_section = {"title": section_title, "sentences": []}
+
+            # Add sentence to current section
+            if item["sentence"].strip():
+                current_section["sentences"].append(item["sentence"])
+
+        # Add last section
+        if current_section:
+            sections.append(current_section)
+
+        self.sections = sections
+
     def _get_cache_dir(self) -> Path:
-        """Get cache directory path"""
-        cache_dir = Path.home() / ".cache" / "s2s"
+        """Get cache directory path in the script's directory"""
+        script_path = Path(self.script_file).resolve()
+        cache_dir = script_path.parent / ".s2s"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
     def _get_cache_file(self) -> Path:
         """Get cache file path for current script"""
-        # Use hash of absolute script path to create unique cache filename
+        # Use script filename (without extension) as cache filename
         script_path = Path(self.script_file).resolve()
-        script_hash = hashlib.md5(str(script_path).encode()).hexdigest()
+        cache_filename = script_path.stem + ".json"
         cache_dir = self._get_cache_dir()
-        return cache_dir / f"{script_hash}.json"
+        return cache_dir / cache_filename
 
     def _save_progress(self):
         """Save current progress to cache"""
@@ -252,6 +361,10 @@ class S2SApp:
             "script_file": str(Path(self.script_file).resolve()),
             "current_index": self.current_index,
             "items": self.items,
+            "script_modified": self.script_modified,
+            "script_hash": (
+                self._compute_script_hash() if not self.script_modified else None
+            ),
         }
 
         # Write cache file
@@ -272,18 +385,66 @@ class S2SApp:
             # Verify this is the same script file
             cached_script = cache_data.get("script_file")
             if cached_script == str(Path(self.script_file).resolve()):
-                # Restore progress
-                self.current_index = cache_data.get("current_index", 0)
                 cached_items = cache_data.get("items", [])
+                self.script_modified = cache_data.get("script_modified", False)
+                cached_hash = cache_data.get("script_hash")
 
-                # Merge cached animations with current items
-                # This handles cases where the script might have changed
-                for i, item in enumerate(self.items):
-                    if i < len(cached_items):
-                        cached_item = cached_items[i]
-                        # If sentence matches, restore animations
-                        if cached_item["sentence"] == item["sentence"]:
-                            item["animations"] = cached_item["animations"]
+                # Check if script file has been modified externally
+                current_hash = self._compute_script_hash()
+                script_changed_externally = (
+                    cached_hash is not None
+                    and current_hash != cached_hash
+                    and not self.script_modified
+                )
+
+                if script_changed_externally:
+                    # Script file was modified externally
+                    # Re-parse the script and merge animations
+                    self.sections = ScriptParser.parse_script(self.script_file)
+
+                    # Rebuild items from new sections
+                    self.items = []
+                    for section in self.sections:
+                        for sentence in section["sentences"]:
+                            self.items.append(
+                                {
+                                    "section": section["title"],
+                                    "sentence": sentence,
+                                    "animations": [],
+                                }
+                            )
+
+                    # Merge animations from cached items
+                    if cached_items:
+                        self._merge_animations_after_script_change(cached_items)
+
+                    # Reset current index if it's out of bounds
+                    cached_index = cache_data.get("current_index", 0)
+                    self.current_index = (
+                        min(cached_index, len(self.items) - 1) if self.items else 0
+                    )
+
+                    # Mark that we've detected external changes (don't overwrite script)
+                    self.script_modified = False
+
+                elif self.script_modified and cached_items:
+                    # Script was modified through s2s, use cached items entirely
+                    self.items = cached_items
+                    self._rebuild_sections_from_items()
+                    self.current_index = cache_data.get("current_index", 0)
+
+                else:
+                    # No external changes, restore progress normally
+                    self.current_index = cache_data.get("current_index", 0)
+
+                    # Merge cached animations with current items
+                    for i, item in enumerate(self.items):
+                        if i < len(cached_items):
+                            cached_item = cached_items[i]
+                            # If sentence matches, restore animations
+                            if cached_item["sentence"] == item["sentence"]:
+                                item["animations"] = cached_item["animations"]
+
         except (json.JSONDecodeError, KeyError, IOError):
             # If cache is corrupted or invalid, just start fresh
             pass
@@ -1616,12 +1777,12 @@ class S2SApp:
         """Generate default output path based on input script name"""
         input_path = Path(self.script_file)
 
-        # Remove " Script" from the end of the filename if present
+        # Always remove " Script" from the end of the filename
         video_name = input_path.stem
         if video_name.endswith(" Script"):
             video_name = video_name[:-7]  # Remove " Script"
 
-        # Create storyboard filename (without "Script" word) in script's directory
+        # Create storyboard filename in script's directory
         output_filename = video_name + " Storyboard.md"
         output_path = input_path.parent / output_filename
         return str(output_path)
@@ -1713,13 +1874,22 @@ class S2SApp:
 
     def save_storyboard(self, prompt_for_path=False):
         """Save current progress to storyboard file"""
+        # First, save script file if it has been modified
+        if self.script_modified:
+            script_content = ScriptGenerator.generate(self.items)
+            with open(self.script_file, "w", encoding="utf-8") as f:
+                f.write(script_content)
+            # Rebuild sections from items to reflect changes
+            self._rebuild_sections_from_items()
+            self.script_modified = False
+
         # Build animations dict
         animations = {}
         for item in self.items:
             if item["animations"]:
                 animations[item["sentence"]] = item["animations"]
 
-        # Get output path
+        # Get output path - always prompt when requested
         if prompt_for_path:
             output_path_str = self.get_output_path_from_user()
             if not output_path_str:  # User cancelled
@@ -1941,12 +2111,14 @@ class S2SApp:
                     # Update the current sentence
                     if text.strip():
                         self.items[self.current_index]["sentence"] = text.strip()
+                        self.script_modified = True
                         # Auto-save progress after updating sentence
                         self._save_progress()
                 elif action == "delete_sentence":
                     # Delete the current sentence and its animations
                     if len(self.items) > 1:  # Don't delete if it's the only sentence
                         self.items.pop(self.current_index)
+                        self.script_modified = True
                         # Adjust current index if needed
                         if self.current_index >= len(self.items):
                             self.current_index = len(self.items) - 1
@@ -2013,6 +2185,7 @@ class S2SApp:
                     # Insert after current sentence
                     insert_pos = self.current_index + 1
                     self.items.insert(insert_pos, new_item)
+                    self.script_modified = True
 
                     # Move to the new sentence and enter edit mode
                     self.current_index = insert_pos
@@ -2034,6 +2207,7 @@ class S2SApp:
                     # Insert before current sentence
                     insert_pos = self.current_index
                     self.items.insert(insert_pos, new_item)
+                    self.script_modified = True
 
                     # Move to the new sentence and enter edit mode (index stays the same since we inserted before)
                     self.current_index = insert_pos
