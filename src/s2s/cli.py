@@ -264,6 +264,13 @@ class S2SApp:
         # Load progress from cache if it exists
         self._load_progress()
 
+        # Final safety check: ensure current_index is valid
+        # This handles edge cases where cache or parsing might have issues
+        if self.items and self.current_index >= len(self.items):
+            self.current_index = len(self.items) - 1
+        elif not self.items:
+            self.current_index = 0
+
     def _compute_script_hash(self) -> str:
         """Compute hash of the script file content"""
         with open(self.script_file, "r", encoding="utf-8") as f:
@@ -431,11 +438,19 @@ class S2SApp:
                     # Script was modified through s2s, use cached items entirely
                     self.items = cached_items
                     self._rebuild_sections_from_items()
-                    self.current_index = cache_data.get("current_index", 0)
+                    cached_index = cache_data.get("current_index", 0)
+                    # Ensure index is within bounds
+                    self.current_index = (
+                        min(cached_index, len(self.items) - 1) if self.items else 0
+                    )
 
                 else:
                     # No external changes, restore progress normally
-                    self.current_index = cache_data.get("current_index", 0)
+                    cached_index = cache_data.get("current_index", 0)
+                    # Ensure index is within bounds
+                    self.current_index = (
+                        min(cached_index, len(self.items) - 1) if self.items else 0
+                    )
 
                     # Merge cached animations with current items
                     for i, item in enumerate(self.items):
