@@ -126,6 +126,20 @@ class ScriptParser:
             current_section["sentences"] = sentences
             sections.append(current_section)
 
+        # If no sections were found (no headers), create a default section with all content
+        if not sections:
+            # Get all non-empty lines that aren't in frontmatter or blockquotes
+            all_lines = [
+                line.strip()
+                for line in content.split("\n")
+                if line.strip() and not line.strip().startswith("[")
+            ]
+            if all_lines:
+                full_text = "\n".join(all_lines)
+                sentences = ScriptParser.extract_sentences(full_text)
+                if sentences:
+                    sections.append({"title": "Script", "sentences": sentences})
+
         return sections
 
     @staticmethod
@@ -1938,6 +1952,22 @@ class S2SApp:
 
     def run(self):
         """Run the main application loop"""
+        # Check if script has any parseable content
+        if not self.items:
+            print(
+                f"{Colors.RED}Error: No parseable sentences found in script file.{Colors.RESET}"
+            )
+            print(f"\n{Colors.WHITE}The script must contain:{Colors.RESET}")
+            print("  • Markdown headers (# Section Title)")
+            print(
+                "  • Sentences that start with a capital letter and end with . ! or ?"
+            )
+            print(f"\n{Colors.DIM}Example format:{Colors.RESET}")
+            print("  # Introduction")
+            print("  This is sentence one. This is sentence two!")
+            print()
+            return
+
         try:
             self.setup_terminal()
 
