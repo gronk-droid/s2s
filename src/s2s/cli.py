@@ -79,7 +79,7 @@ class ScriptParser:
 
     @staticmethod
     def parse_script(filepath: str) -> List[Dict]:
-        """Parse script file into sections and sentences"""
+        """Parse script file into sections and content items (sentences, tables, code blocks)"""
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -90,82 +90,280 @@ class ScriptParser:
         content = re.sub(r"^>.*$", "", content, flags=re.MULTILINE)
 
         # Split content by headers
-        # Match headers and capture both the header and the content until the next header
         section_pattern = r"^(#{1,6})\s+(.+?)$"
 
         sections = []
         current_section = None
-        current_content = []
+        current_content_lines = []
+
+        # State for code blocks
+        in_code_block = False
+        code_block_lines = []
+        code_lang = None
+
+        # State for tables
+        table_lines = []
+
+        def flush_table():
+            """Flush accumulated table lines as a table content item"""
+            nonlocal table_lines
+            if table_lines:
+                raw = "\n".join(table_lines)
+                current_content_lines.append(
+                    {
+                        "type": "table",
+                        "content": f"[TABLE: {ScriptParser._extract_table_summary(table_lines)}]",
+                        "raw_content": raw,
+                    }
+                )
+                table_lines = []
+
+        def flush_code_block():
+            """Flush accumulated code block as a code content item"""
+            nonlocal code_block_lines, code_lang
+            if code_block_lines or code_lang is not None:
+                raw = "\n".join(code_block_lines)
+                lang_display = code_lang.upper() if code_lang else "CODE"
+                # Get first meaningful line for preview
+                first_line = ""
+                for line in code_block_lines:
+                    if line.strip():
+                        first_line = line.strip()[:40]
+                        if len(line.strip()) > 40:
+                            first_line += "..."
+                        break
+                summary = (
+                    f"[{lang_display}] {first_line}"
+                    if first_line
+                    else f"[{lang_display}]"
+                )
+                current_content_lines.append(
+                    {
+                        "type": "code",
+                        "content": summary,
+                        "raw_content": raw,
+                        "lang": code_lang,
+                    }
+                )
+                code_block_lines = []
+                code_lang = None
 
         for line in content.split("\n"):
-            header_match = re.match(section_pattern, line.strip())
+            stripped = line.strip()
+
+            # Handle code block boundaries
+            if stripped.startswith("```"):
+                if in_code_block:
+                    # End of code block
+                    flush_code_block()
+                    in_code_block = False
+                else:
+                    # Start of code block - flush any pending table first
+                    flush_table()
+                    in_code_block = True
+                    code_lang = stripped[3:].strip() or None
+                    code_block_lines = []
+                continue
+
+            # If inside code block, accumulate lines
+            if in_code_block:
+                code_block_lines.append(line.rstrip())
+                continue
+
+            # Check for header
+            header_match = re.match(section_pattern, stripped)
 
             if header_match:
+                # Flush any pending table before processing header
+                flush_table()
+
                 # Save previous section if exists
                 if current_section:
-                    # Join content lines preserving line breaks (use newline for paragraph breaks)
-                    full_text = "\n".join(current_content)
-                    sentences = ScriptParser.extract_sentences(full_text)
-                    current_section["sentences"] = sentences
+                    content_items = ScriptParser.extract_content_items(
+                        current_content_lines
+                    )
+                    current_section["content_items"] = content_items
                     sections.append(current_section)
 
                 # Start new section
                 header_text = header_match.group(2).strip()
-                current_section = {"title": header_text, "sentences": []}
-                current_content = []
+                current_section = {"title": header_text, "content_items": []}
+                current_content_lines = []
             elif current_section:
-                # Add non-empty lines to current content
-                stripped = line.strip()
-                if stripped and not stripped.startswith("["):
-                    current_content.append(stripped)
+                # Check if this is a table line
+                if stripped.startswith("|"):
+                    table_lines.append(stripped)
+                else:
+                    # Flush any pending table when we hit non-table content
+                    flush_table()
+
+                    # Add non-empty, non-link lines as regular content
+                    if stripped and not stripped.startswith("["):
+                        current_content_lines.append(stripped)
+
+        # Flush any remaining code block or table
+        if in_code_block:
+            flush_code_block()
+        flush_table()
 
         # Add last section
         if current_section:
-            full_text = "\n".join(current_content)
-            sentences = ScriptParser.extract_sentences(full_text)
-            current_section["sentences"] = sentences
+            content_items = ScriptParser.extract_content_items(current_content_lines)
+            current_section["content_items"] = content_items
             sections.append(current_section)
 
-        # If no sections were found (no headers), create a default section with all content
+        # If no sections were found (no headers), create a default section
         if not sections:
-            # Get all non-empty lines that aren't in frontmatter or blockquotes
             all_lines = [
                 line.strip()
                 for line in content.split("\n")
                 if line.strip() and not line.strip().startswith("[")
             ]
             if all_lines:
-                full_text = "\n".join(all_lines)
-                sentences = ScriptParser.extract_sentences(full_text)
-                if sentences:
-                    sections.append({"title": "Script", "sentences": sentences})
+                content_items = ScriptParser.extract_content_items(all_lines)
+                if content_items:
+                    sections.append({"title": "Script", "content_items": content_items})
 
         return sections
 
     @staticmethod
-    def extract_sentences(text: str) -> List[str]:
-        """Extract sentences from text using regex"""
+    def _extract_table_summary(table_lines: List[str]) -> str:
+        """Extract a summary description from table header"""
+        if not table_lines:
+            return "Table"
+        # Get header row and extract column names
+        header = table_lines[0]
+        # Remove leading/trailing pipes and split
+        cells = [c.strip() for c in header.strip("|").split("|")]
+        # Remove markdown bold markers
+        cells = [re.sub(r"\*\*(.+?)\*\*", r"\1", c) for c in cells if c.strip()]
+        if cells:
+            # Return first 2-3 column names as summary
+            summary_cols = cells[:3]
+            summary = ", ".join(summary_cols)
+            if len(cells) > 3:
+                summary += f" +{len(cells) - 3} more"
+            row_count = len(
+                [
+                    line
+                    for line in table_lines
+                    if not line.strip().startswith("|--")
+                    and not line.strip().startswith("|-")
+                ]
+            )
+            return f"{summary} ({row_count} rows)"
+        return f"Table ({len(table_lines)} rows)"
+
+    @staticmethod
+    def extract_content_items(content_lines: List) -> List[Dict]:
+        """Extract content items from lines, handling sentences, tables, and code blocks"""
+        items = []
+
+        # Separate already-parsed items (dicts) from raw text lines
+        text_buffer = []
+
+        for line in content_lines:
+            if isinstance(line, dict):
+                # Flush text buffer first
+                if text_buffer:
+                    sentences = ScriptParser._extract_sentences_from_text(
+                        "\n".join(text_buffer)
+                    )
+                    for sentence in sentences:
+                        items.append(
+                            {
+                                "type": "sentence",
+                                "content": sentence,
+                                "raw_content": None,
+                            }
+                        )
+                    text_buffer = []
+                # Add the pre-parsed item (table or code block)
+                items.append(line)
+            else:
+                text_buffer.append(line)
+
+        # Flush remaining text buffer
+        if text_buffer:
+            sentences = ScriptParser._extract_sentences_from_text(
+                "\n".join(text_buffer)
+            )
+            for sentence in sentences:
+                items.append(
+                    {"type": "sentence", "content": sentence, "raw_content": None}
+                )
+
+        return items
+
+    @staticmethod
+    def _extract_sentences_from_text(text: str) -> List[str]:
+        """Extract sentences from text, handling numbered lists with nested bullets"""
         if not text.strip():
             return []
 
-        # Find all sentences with their punctuation
-        # Pattern: starts with capital letter, matches any content (including .BANK etc),
-        # ends with .!? followed by whitespace or end of text
-        # Use non-greedy matching to stop at the first sentence-ending punctuation
-        sentence_pattern = r"[A-Z].*?[.!?](?=\s|$)"
+        lines = text.split("\n")
+        sentences = []
+        i = 0
 
-        sentences = re.findall(sentence_pattern, text, re.DOTALL)
+        while i < len(lines):
+            line = lines[i].strip()
 
-        # Clean up sentences - remove extra whitespace and newlines within sentences
-        cleaned = []
-        for sentence in sentences:
-            # Replace multiple whitespace/newlines with single space
-            sentence = re.sub(r"\s+", " ", sentence)
-            sentence = sentence.strip()
-            if sentence and len(sentence) > 1:
-                cleaned.append(sentence)
+            # Check if this is a numbered list item
+            numbered_match = re.match(r"^(\d+\.)\s+(.+)$", line)
 
-        return cleaned
+            if numbered_match:
+                # Start collecting the numbered item and its nested bullets
+                list_parts = [line]
+                i += 1
+
+                # Collect all nested bullets that follow
+                while i < len(lines):
+                    next_line = lines[i].strip()
+
+                    # Check if it's a bullet point (starts with * or -)
+                    if next_line and re.match(r"^[\*\-]\s+", next_line):
+                        list_parts.append(next_line)
+                        i += 1
+                    # Check if it's another numbered item (stop collecting)
+                    elif re.match(r"^\d+\.", next_line):
+                        break
+                    # Empty line or other content (stop collecting)
+                    elif not next_line or re.match(r"^[A-Z]", next_line):
+                        break
+                    else:
+                        # Might be a continuation, add it
+                        list_parts.append(next_line)
+                        i += 1
+
+                # Merge all parts into one sentence
+                merged = " ".join(list_parts)
+                # Clean up whitespace
+                merged = re.sub(r"\s+", " ", merged)
+                sentences.append(merged.strip())
+
+            elif line:
+                # Regular text - extract sentences normally
+                sentence_pattern = r"[A-Z].*?[.!?](?=\s|$)"
+
+                found_sentences = re.findall(sentence_pattern, line, re.DOTALL)
+
+                for sentence in found_sentences:
+                    sentence = re.sub(r"\s+", " ", sentence)
+                    sentence = sentence.strip()
+                    if sentence and len(sentence) > 1:
+                        sentences.append(sentence)
+
+                i += 1
+            else:
+                i += 1
+
+        return sentences
+
+    # Keep old method for backwards compatibility
+    @staticmethod
+    def extract_sentences(text: str) -> List[str]:
+        """Extract sentences from text (backwards compatibility wrapper)"""
+        return ScriptParser._extract_sentences_from_text(text)
 
 
 class ScriptGenerator:
@@ -176,7 +374,7 @@ class ScriptGenerator:
         """Generate script markdown content from items"""
         lines = []
 
-        # Group items by section
+        # Group items by section, keeping full item info
         sections = {}
         section_order = []
         for item in items:
@@ -184,17 +382,64 @@ class ScriptGenerator:
             if section_title not in sections:
                 sections[section_title] = []
                 section_order.append(section_title)
-            sections[section_title].append(item["sentence"])
+            sections[section_title].append(item)
 
         # Generate markdown
         for section_title in section_order:
             lines.append(f"# {section_title}")
             lines.append("")
 
-            # Add all sentences for this section
-            for sentence in sections[section_title]:
-                if sentence.strip():  # Only add non-empty sentences
-                    lines.append(sentence)
+            # Add all content items for this section
+            for item in sections[section_title]:
+                item_type = item.get("type", "sentence")
+                raw_content = item.get("raw_content")
+                sentence = item.get("sentence", "")
+
+                if not sentence.strip() and not raw_content:
+                    continue
+
+                if item_type == "table" and raw_content:
+                    # Output full table
+                    lines.append(raw_content)
+                    lines.append("")
+                elif item_type == "code" and raw_content:
+                    # Output full code block with language
+                    lang = item.get("lang", "")
+                    lines.append(f"```{lang}")
+                    lines.append(raw_content)
+                    lines.append("```")
+                    lines.append("")
+                elif sentence.strip():
+                    # Regular sentence handling
+                    # Check if this is a merged numbered list item
+                    numbered_match = re.match(r"^(\d+\.)\s+(.+)$", sentence)
+
+                    if numbered_match:
+                        # This is a numbered list item, possibly with nested bullets
+                        # Split on bullet markers (* or -) while preserving them
+                        parts = re.split(r"\s+([\*\-])\s+", sentence)
+
+                        if len(parts) > 1:
+                            # Has nested bullets - format properly
+                            lines.append(parts[0])  # The numbered item
+
+                            # Process remaining parts (marker, content, marker, content, ...)
+                            i = 1
+                            while i < len(parts):
+                                if i + 1 < len(parts):
+                                    marker = parts[i]
+                                    content = parts[i + 1]
+                                    lines.append(f"   {marker} {content}")
+                                    i += 2
+                                else:
+                                    i += 1
+                        else:
+                            # Just a numbered item without bullets
+                            lines.append(sentence)
+                    else:
+                        # Regular sentence
+                        lines.append(sentence)
+
                     lines.append("")
 
         return "\n".join(lines)
@@ -205,7 +450,10 @@ class StoryboardGenerator:
 
     @staticmethod
     def generate(
-        input_file: str, sections: List[Dict], animations: Dict[str, List[str]]
+        input_file: str,
+        sections: List[Dict],
+        animations: Dict[str, List[str]],
+        items: List[Dict] = None,
     ) -> str:
         """Generate storyboard markdown content"""
         lines = []
@@ -220,16 +468,48 @@ class StoryboardGenerator:
         lines.append("---")
         lines.append("")
 
+        # Build a lookup for items by content key to get raw_content
+        item_lookup = {}
+        if items:
+            for item in items:
+                item_lookup[item["sentence"]] = item
+
         # Add sections with animations
         for section in sections:
             lines.append(f"# {section['title']}")
             lines.append("")
 
-            for sentence in section["sentences"]:
-                if sentence in animations and animations[sentence]:
-                    for animation in animations[sentence]:
+            # Handle both new format (content_items) and old format (sentences)
+            content_items = section.get("content_items", [])
+            if not content_items and "sentences" in section:
+                content_items = [
+                    {"type": "sentence", "content": s, "raw_content": None}
+                    for s in section["sentences"]
+                ]
+
+            for content_item in content_items:
+                content_key = content_item["content"]
+                item_type = content_item.get("type", "sentence")
+                raw_content = content_item.get("raw_content")
+
+                # For tables and code blocks, include the full content as a reference
+                if item_type == "table" and raw_content:
+                    lines.append("**Table:**")
+                    lines.append("")
+                    lines.append(raw_content)
+                    lines.append("")
+                elif item_type == "code" and raw_content:
+                    lang = content_item.get("lang", "")
+                    lines.append(f"```{lang}")
+                    lines.append(raw_content)
+                    lines.append("```")
+                    lines.append("")
+
+                # Add animations for this content
+                if content_key in animations and animations[content_key]:
+                    for animation in animations[content_key]:
                         lines.append(f"- [ ] {animation}")
-                lines.append("")
+                    lines.append("")
 
         return "\n".join(lines)
 
@@ -241,14 +521,28 @@ class S2SApp:
         self.script_file = script_file
         self.sections = ScriptParser.parse_script(script_file)
 
-        # Flatten sentences with section references
+        # Flatten content items with section references
         self.items = []
         for section in self.sections:
-            for sentence in section["sentences"]:
+            # Handle both new format (content_items) and old format (sentences) for backwards compatibility
+            content_items = section.get("content_items", [])
+            if not content_items and "sentences" in section:
+                # Old format - convert sentences to content items
+                content_items = [
+                    {"type": "sentence", "content": s, "raw_content": None}
+                    for s in section["sentences"]
+                ]
+
+            for item in content_items:
                 self.items.append(
                     {
                         "section": section["title"],
-                        "sentence": sentence,
+                        "sentence": item[
+                            "content"
+                        ],  # Keep "sentence" key for compatibility
+                        "type": item.get("type", "sentence"),
+                        "raw_content": item.get("raw_content"),
+                        "lang": item.get("lang"),  # For code blocks
                         "animations": [],
                     }
                 )
@@ -271,6 +565,9 @@ class S2SApp:
         )
         self.review_focus = "script"  # 'script' or 'animations' - which column is focused in review mode
         self.show_help = False  # Toggle detailed help with ?
+
+        # Fixed column position for animations in line-by-line mode
+        self.ANIMATION_START_COL = 10
 
         # Track if script content has been modified
         self.script_modified = False
@@ -346,11 +643,17 @@ class S2SApp:
             if current_section is None or current_section["title"] != section_title:
                 if current_section:
                     sections.append(current_section)
-                current_section = {"title": section_title, "sentences": []}
+                current_section = {"title": section_title, "content_items": []}
 
-            # Add sentence to current section
+            # Add content item to current section
             if item["sentence"].strip():
-                current_section["sentences"].append(item["sentence"])
+                content_item = {
+                    "type": item.get("type", "sentence"),
+                    "content": item["sentence"],
+                    "raw_content": item.get("raw_content"),
+                    "lang": item.get("lang"),
+                }
+                current_section["content_items"].append(content_item)
 
         # Add last section
         if current_section:
@@ -376,10 +679,20 @@ class S2SApp:
     def _save_progress(self):
         """Save current progress to cache"""
         cache_file = self._get_cache_file()
+        cache_dir = self._get_cache_dir()
+
+        # Store script file path relative to the cache directory for portability
+        # This allows moving the .s2s directory with the script file
+        script_path = Path(self.script_file).resolve()
+        try:
+            relative_script_path = os.path.relpath(script_path, cache_dir)
+        except ValueError:
+            # On Windows, relpath fails if paths are on different drives
+            relative_script_path = str(script_path)
 
         # Prepare data to cache
         cache_data = {
-            "script_file": str(Path(self.script_file).resolve()),
+            "script_file": relative_script_path,
             "current_index": self.current_index,
             "items": self.items,
             "script_modified": self.script_modified,
@@ -395,6 +708,7 @@ class S2SApp:
     def _load_progress(self):
         """Load progress from cache if available"""
         cache_file = self._get_cache_file()
+        cache_dir = self._get_cache_dir()
 
         if not cache_file.exists():
             return
@@ -405,7 +719,18 @@ class S2SApp:
 
             # Verify this is the same script file
             cached_script = cache_data.get("script_file")
-            if cached_script == str(Path(self.script_file).resolve()):
+            current_script_resolved = Path(self.script_file).resolve()
+
+            # Handle both relative paths (new format) and absolute paths (backwards compatibility)
+            cached_script_path = Path(cached_script)
+            if cached_script_path.is_absolute():
+                # Old format: absolute path
+                cached_script_resolved = cached_script_path
+            else:
+                # New format: relative to cache directory
+                cached_script_resolved = (cache_dir / cached_script).resolve()
+
+            if cached_script_resolved == current_script_resolved:
                 cached_items = cache_data.get("items", [])
                 self.script_modified = cache_data.get("script_modified", False)
                 cached_hash = cache_data.get("script_hash")
@@ -426,11 +751,21 @@ class S2SApp:
                     # Rebuild items from new sections
                     self.items = []
                     for section in self.sections:
-                        for sentence in section["sentences"]:
+                        content_items = section.get("content_items", [])
+                        if not content_items and "sentences" in section:
+                            content_items = [
+                                {"type": "sentence", "content": s, "raw_content": None}
+                                for s in section["sentences"]
+                            ]
+
+                        for item in content_items:
                             self.items.append(
                                 {
                                     "section": section["title"],
-                                    "sentence": sentence,
+                                    "sentence": item["content"],
+                                    "type": item.get("type", "sentence"),
+                                    "raw_content": item.get("raw_content"),
+                                    "lang": item.get("lang"),
                                     "animations": [],
                                 }
                             )
@@ -1392,45 +1727,69 @@ class S2SApp:
         TerminalControl.move_cursor(3, max(1, title_x))
         print(f"{Colors.BOLD}{Colors.MAGENTA}{section_title}{Colors.RESET}", end="")
 
-        # Previous sentence (if exists)
+        # Previous item (if exists)
         if self.current_index > 0:
             prev_item = self.items[self.current_index - 1]
-            prev_sentence = prev_item["sentence"]
+            prev_type = prev_item.get("type", "sentence")
+
+            # For tables/code, show the summary; for sentences, show the sentence
+            if prev_type in ("table", "code"):
+                prev_text = prev_item["sentence"]  # This is already the summary
+            else:
+                prev_text = prev_item["sentence"]
 
             TerminalControl.move_cursor(5, 1)
             # Truncate if too long
             max_width = cols - 4
-            if len(prev_sentence) > max_width:
-                prev_sentence = prev_sentence[: max_width - 3] + "..."
+            if len(prev_text) > max_width:
+                prev_text = prev_text[: max_width - 3] + "..."
 
-            prev_x = (cols - len(prev_sentence)) // 2
+            prev_x = (cols - len(prev_text)) // 2
             TerminalControl.move_cursor(5, max(1, prev_x))
-            print(f"{Colors.DIM}{prev_sentence}{Colors.RESET}", end="")
+            print(f"{Colors.DIM}{prev_text}{Colors.RESET}", end="")
 
-        # Current sentence in a box
+        # Current content in a box
         sentence = current_item["sentence"]
+        item_type = current_item.get("type", "sentence")
         box_y = rows // 2 - 5
 
-        # Word wrap the sentence if needed
+        # Format content based on type
         max_box_width = min(cols - 10, 80)
-        wrapped_lines = self.wrap_text(sentence, max_box_width - 4)
+        content_width = (
+            max_box_width - 8
+        )  # Account for left padding (2) + right padding (2)
+
+        if item_type == "table":
+            raw_content = current_item.get("raw_content", "")
+            wrapped_lines = self.format_table_preview(raw_content, content_width)
+        elif item_type == "code":
+            raw_content = current_item.get("raw_content", "")
+            lang = current_item.get("lang")
+            wrapped_lines = self.format_code_preview(raw_content, lang, content_width)
+        else:
+            # Regular sentence - handles numbered lists with bullets on separate lines
+            wrapped_lines = self.format_list_item(sentence, content_width)
 
         # Draw box
-        box_width = min(max_box_width, max(len(line) for line in wrapped_lines) + 4)
+        # Box width = longest line + left padding (2) + right padding (2) + borders (2)
+        box_width = min(max_box_width, max(len(line) for line in wrapped_lines) + 6)
         box_x = (cols - box_width) // 2
 
         # Top border
         TerminalControl.move_cursor(box_y, box_x)
         print(f"{Colors.BLUE}╔{'═' * (box_width - 2)}╗{Colors.RESET}", end="")
 
-        # Content lines
+        # Content lines (left-aligned)
         for i, line in enumerate(wrapped_lines):
             TerminalControl.move_cursor(box_y + 1 + i, box_x)
-            padding = (box_width - 2 - len(line)) // 2
+            left_padding = 2  # Fixed left padding for alignment
+            right_padding = max(
+                0, box_width - 2 - len(line) - left_padding
+            )  # Prevent negative
             print(f"{Colors.BLUE}║{Colors.RESET}", end="")
-            print(" " * padding, end="")
+            print(" " * left_padding, end="")
             print(f"{Colors.WHITE}{line}{Colors.RESET}", end="")
-            print(" " * (box_width - 2 - len(line) - padding), end="")
+            print(" " * right_padding, end="")
             print(f"{Colors.BLUE}║{Colors.RESET}", end="")
 
         # Bottom border
@@ -1440,21 +1799,61 @@ class S2SApp:
         # Show existing animations for this sentence
         if current_item["animations"]:
             anim_y = box_y + len(wrapped_lines) + 3
-            TerminalControl.move_cursor(anim_y, box_x)
+            TerminalControl.move_cursor(anim_y, self.ANIMATION_START_COL)
             print(f"{Colors.GREEN}Animations:{Colors.RESET}", end="")
 
+            # Track current row position for wrapped animations
+            current_anim_row = 0
+
             for i, anim in enumerate(current_item["animations"]):
-                TerminalControl.move_cursor(anim_y + 1 + i, box_x + 2)
-                # Highlight selected animation in browse/edit mode
+                # Calculate available width for animation text
+                # Account for prefix "- [ ] " (6 chars) or "> [ ] " (6 chars), margins
+                prefix_width = 6  # "- [ ] " or "> [ ] "
+                available_width = (
+                    cols - self.ANIMATION_START_COL - prefix_width - 4
+                )  # 4 for margin
+
+                # Wrap the animation text if needed
+                wrapped_anim = self.wrap_text(
+                    anim, max(available_width, 20)
+                )  # Min width of 20
+
+                # Display first line with checkbox prefix
+                TerminalControl.move_cursor(
+                    anim_y + 1 + current_anim_row, self.ANIMATION_START_COL + 2
+                )
+
                 if (
                     self.mode in ["browse", "edit"]
                     and i == self.selected_animation_index
                 ):
+                    # Highlight selected animation
                     print(
-                        f"{Colors.CYAN}{Colors.BOLD}> [ ] {anim}{Colors.RESET}", end=""
+                        f"{Colors.CYAN}{Colors.BOLD}> [ ] {wrapped_anim[0]}{Colors.RESET}",
+                        end="",
                     )
                 else:
-                    print(f"{Colors.DIM}- [ ] {anim}{Colors.RESET}", end="")
+                    print(f"{Colors.DIM}- [ ] {wrapped_anim[0]}{Colors.RESET}", end="")
+
+                current_anim_row += 1
+
+                # Display continuation lines indented by one tab (4 spaces from the checkbox)
+                for continuation_line in wrapped_anim[1:]:
+                    TerminalControl.move_cursor(
+                        anim_y + 1 + current_anim_row,
+                        self.ANIMATION_START_COL + 2 + 6 + 4,
+                    )
+                    if (
+                        self.mode in ["browse", "edit"]
+                        and i == self.selected_animation_index
+                    ):
+                        print(
+                            f"{Colors.CYAN}{Colors.BOLD}{continuation_line}{Colors.RESET}",
+                            end="",
+                        )
+                    else:
+                        print(f"{Colors.DIM}{continuation_line}{Colors.RESET}", end="")
+                    current_anim_row += 1
 
         # Input box at bottom
         input_y = rows - 6
@@ -1568,9 +1967,14 @@ class S2SApp:
                 if current_row >= content_end_row:
                     break
 
-            # Calculate space for this sentence
+            # Calculate space for this content item
             left_col_width = mid_col - 4
-            wrapped_sentence = self.wrap_text(item["sentence"], left_col_width)
+            item_type = item.get("type", "sentence")
+            if item_type in ("table", "code"):
+                # Tables and code show as single summary line in review mode
+                wrapped_sentence = [item["sentence"]]
+            else:
+                wrapped_sentence = self.wrap_text(item["sentence"], left_col_width)
             animations = item["animations"]
             sentence_lines = len(wrapped_sentence)
             num_anims = len(animations) if animations else 1
@@ -1623,10 +2027,20 @@ class S2SApp:
             else:
                 prefix = "  "
 
-            # Draw sentence (left side) - with full word wrapping
+            # Draw content (left side) - with full word wrapping
             sentence = item["sentence"]
+            item_type = item.get("type", "sentence")
             left_col_width = mid_col - 4
-            wrapped_sentence = self.wrap_text(sentence, left_col_width)
+
+            # Format based on content type
+            if item_type == "table":
+                # For review mode, show summary line for tables
+                wrapped_sentence = [sentence]  # Already formatted as summary
+            elif item_type == "code":
+                # For review mode, show summary line for code
+                wrapped_sentence = [sentence]  # Already formatted as summary
+            else:
+                wrapped_sentence = self.wrap_text(sentence, left_col_width)
 
             # Draw all wrapped lines for this sentence
             for line_idx, line in enumerate(wrapped_sentence):
@@ -1802,6 +2216,103 @@ class S2SApp:
 
         return lines if lines else [""]
 
+    def format_list_item(self, text: str, width: int) -> List[str]:
+        """Format numbered list items with nested bullets on separate lines"""
+        # Check if this is a numbered list item
+        numbered_match = re.match(r"^(\d+\.\s+)(.+)$", text)
+
+        if not numbered_match:
+            # Regular text - use normal wrapping
+            return self.wrap_text(text, width)
+
+        # Extract the numbered prefix and rest
+        prefix = numbered_match.group(1)
+        rest = numbered_match.group(2)
+
+        # Split on bullet markers while preserving them
+        parts = re.split(r"\s+([\*\-])\s+", rest)
+
+        lines = []
+
+        if len(parts) == 1:
+            # No nested bullets - just wrap normally
+            full_text = prefix + parts[0]
+            return self.wrap_text(full_text, width)
+
+        # First part is the numbered item text (before first bullet)
+        numbered_line = prefix + parts[0]
+        lines.append(numbered_line)
+
+        # Process bullets (marker, content, marker, content, ...)
+        i = 1
+        while i < len(parts):
+            if i + 1 < len(parts):
+                marker = parts[i]
+                content = parts[i + 1]
+                # Wrap bullet content if needed
+                bullet_text = f"   {marker} {content}"
+                if len(bullet_text) <= width:
+                    lines.append(bullet_text)
+                else:
+                    # Wrap long bullet content
+                    wrapped = self.wrap_text(content, width - 5)
+                    lines.append(f"   {marker} {wrapped[0]}")
+                    for wrapped_line in wrapped[1:]:
+                        lines.append(f"     {wrapped_line}")
+                i += 2
+            else:
+                i += 1
+
+        return lines
+
+    def format_table_preview(
+        self, raw_content: str, width: int, max_rows: int = 4
+    ) -> List[str]:
+        """Format table for display, showing header + limited rows with truncation"""
+        if not raw_content:
+            return ["[TABLE]"]
+
+        table_lines = raw_content.split("\n")
+        result = []
+
+        for i, line in enumerate(table_lines):
+            if i >= max_rows + 1:  # +1 to account for separator row
+                remaining = len(table_lines) - i
+                result.append(f"  ... {remaining} more rows")
+                break
+
+            # Truncate line if too long
+            if len(line) > width:
+                line = line[: width - 3] + "..."
+            result.append(line)
+
+        return result if result else ["[TABLE]"]
+
+    def format_code_preview(
+        self, raw_content: str, lang: str, width: int, max_lines: int = 4
+    ) -> List[str]:
+        """Format code block for display with truncation"""
+        header = f"[CODE: {lang.upper()}]" if lang else "[CODE]"
+        result = [header]
+
+        if not raw_content:
+            return result
+
+        code_lines = raw_content.split("\n")
+
+        for i, line in enumerate(code_lines):
+            if i >= max_lines:
+                remaining = len(code_lines) - i
+                result.append(f"  ... {remaining} more lines")
+                break
+
+            # Truncate line if too long
+            if len(line) > width:
+                line = line[: width - 3] + "..."
+            result.append(line)
+
+        return result
+
     def get_default_output_path(self) -> str:
         """Generate default output path based on input script name"""
         input_path = Path(self.script_file)
@@ -1941,7 +2452,7 @@ class S2SApp:
 
         # Generate content
         content = StoryboardGenerator.generate(
-            self.script_file, self.sections, animations
+            self.script_file, self.sections, animations, self.items
         )
 
         # Write file
