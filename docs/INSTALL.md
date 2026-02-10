@@ -107,6 +107,9 @@ make build
 # The binary will be in dist/s2s
 ./dist/s2s "path/to/script.md"
 
+# Install the binary to /usr/local/bin (on PATH, no venv needed)
+sudo make install-bin
+
 # Create distribution package
 make dist
 ```
