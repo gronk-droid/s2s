@@ -517,8 +517,9 @@ class StoryboardGenerator:
 class S2SApp:
     """Main application for s2s"""
 
-    def __init__(self, script_file: str):
+    def __init__(self, script_file: str, force_update: bool = False):
         self.script_file = script_file
+        self.force_update = force_update
         self.sections = ScriptParser.parse_script(script_file)
 
         # Flatten content items with section references
@@ -696,9 +697,7 @@ class S2SApp:
             "current_index": self.current_index,
             "items": self.items,
             "script_modified": self.script_modified,
-            "script_hash": (
-                self._compute_script_hash() if not self.script_modified else None
-            ),
+            "script_hash": self._compute_script_hash(),
         }
 
         # Write cache file
@@ -735,12 +734,45 @@ class S2SApp:
                 self.script_modified = cache_data.get("script_modified", False)
                 cached_hash = cache_data.get("script_hash")
 
+                if self.force_update:
+                    self.sections = ScriptParser.parse_script(self.script_file)
+
+                    self.items = []
+                    for section in self.sections:
+                        content_items = section.get("content_items", [])
+                        if not content_items and "sentences" in section:
+                            content_items = [
+                                {"type": "sentence", "content": s, "raw_content": None}
+                                for s in section["sentences"]
+                            ]
+
+                        for item in content_items:
+                            self.items.append(
+                                {
+                                    "section": section["title"],
+                                    "sentence": item["content"],
+                                    "type": item.get("type", "sentence"),
+                                    "raw_content": item.get("raw_content"),
+                                    "lang": item.get("lang"),
+                                    "animations": [],
+                                }
+                            )
+
+                    if cached_items:
+                        self._merge_animations_after_script_change(cached_items)
+
+                    cached_index = cache_data.get("current_index", 0)
+                    self.current_index = (
+                        min(cached_index, len(self.items) - 1) if self.items else 0
+                    )
+                    self.script_modified = False
+                    return
+
                 # Check if script file has been modified externally
                 current_hash = self._compute_script_hash()
                 script_changed_externally = (
                     cached_hash is not None
                     and current_hash != cached_hash
-                    and not self.script_modified
                 )
 
                 if script_changed_externally:
@@ -781,6 +813,41 @@ class S2SApp:
                     )
 
                     # Mark that we've detected external changes (don't overwrite script)
+                    self.script_modified = False
+
+                elif cached_hash is None and self.script_modified:
+                    # Legacy cache with no hash stored — re-parse and merge
+                    # to pick up any external .md changes
+                    self.sections = ScriptParser.parse_script(self.script_file)
+
+                    self.items = []
+                    for section in self.sections:
+                        content_items = section.get("content_items", [])
+                        if not content_items and "sentences" in section:
+                            content_items = [
+                                {"type": "sentence", "content": s, "raw_content": None}
+                                for s in section["sentences"]
+                            ]
+
+                        for item in content_items:
+                            self.items.append(
+                                {
+                                    "section": section["title"],
+                                    "sentence": item["content"],
+                                    "type": item.get("type", "sentence"),
+                                    "raw_content": item.get("raw_content"),
+                                    "lang": item.get("lang"),
+                                    "animations": [],
+                                }
+                            )
+
+                    if cached_items:
+                        self._merge_animations_after_script_change(cached_items)
+
+                    cached_index = cache_data.get("current_index", 0)
+                    self.current_index = (
+                        min(cached_index, len(self.items) - 1) if self.items else 0
+                    )
                     self.script_modified = False
 
                 elif self.script_modified and cached_items:
@@ -3017,20 +3084,23 @@ class S2SApp:
 
 def main():
     """Main entry point"""
-    if len(sys.argv) < 2:
-        print(f"{Colors.RED}Usage: s2s.py <script_file.md>{Colors.RESET}")
-        print(
-            f"{Colors.WHITE}Example: s2s.py 'Bulk API Release Short Script.md'{Colors.RESET}"
-        )
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="s2s")
+    parser.add_argument("script_file", help="Path to the script .md file")
+    parser.add_argument(
+        "-f",
+        "--force-update",
+        action="store_true",
+        help="Force re-parse the script and merge animations, ignoring the cached hash",
+    )
+    args = parser.parse_args()
+
+    if not os.path.exists(args.script_file):
+        print(f"{Colors.RED}Error: File not found: {args.script_file}{Colors.RESET}")
         sys.exit(1)
 
-    script_file = sys.argv[1]
-
-    if not os.path.exists(script_file):
-        print(f"{Colors.RED}Error: File not found: {script_file}{Colors.RESET}")
-        sys.exit(1)
-
-    app = S2SApp(script_file)
+    app = S2SApp(args.script_file, force_update=args.force_update)
     app.run()
 
 
